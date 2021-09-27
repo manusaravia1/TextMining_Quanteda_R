@@ -1,0 +1,500 @@
+---
+MANUEL SARAVIA ENRECH, INSO4-Z
+BAIN - Trabajo Final
+---
+
+Dataset: "enron_data_revised.rda"
+Loading data
+```{r, results='hide', echo=FALSE}
+#getwd()
+#setwd("./") # fijar el working directory
+load("enron_data_revised.rda")
+ls()
+```
+# Parte 1: SNA para Enron e-mails datasets
+
+Setting up the R + igraph environment
+```{r}
+#install.packages("igraph")
+library(igraph)
+library(gplots)
+```
+
+We have 61673 rows with the following information in the edges.full dataframe:
+- sender: e-mail address of sender
+- receiver: e-mail address of receiver
+- type of e-mail (CC, BCC, TO)
+- subject: string with the subject of e-mail
+- body: full text of e-mail message
+- date
+We can re-format date string so that we can use dates (ie filter, compute durations) more easily in R. See description below.
+
+```{r}
+edges.full$date.R <- as.POSIXct(edges.full$date)
+str(edges.full)
+```
+
+The other required object to produce an igraph graph object is the nodes dataframe. This contains all the info about the nodes, in our case, the enron employees who were e-mail sender or receivers.
+This dataframe contains e-mail address as node id, the lastName as a useful string for labelling, and her/his status in the company (if available).
+
+```{r}
+# Number of nodes
+nrow(nodes)
+# Description of the nodes object
+str(nodes)
+```
+
+## 1- Creating network.full, an igraph network graph using edges.full and nodes
+
+Más adelante de network.full pasaremos a network.sna y finalmente a network.social.
+- network.full: grafo dirigido inicial creado a partir de edges.full y nodes, con múltiples arcos (mensajes) entre vértices (empleados) 
+- network.sna: grafo dirigido creado a partir network.full, pero ya con un arco dirigido como máximo entre dos vértices. El número de mensajes entre dos vertices queda como propiedad del arco.
+- network.social: grafo no dirigido creado a partir de network.sna. Dos vertices quedan conectados si había un arco entre ellos en cualquier sentido. El total de mensajes intercambiados entre esos dos vertices queda como propiedad (weight) del arco.
+
+
+```{r}
+network.full <- graph.data.frame(edges.full[,c("sender",
+                                               "receiver",
+                                               "type",
+                                               "date",
+                                               "subject")],
+                            directed = TRUE,
+                            vertices = nodes)
+summary(network.full)
+```
+
+## 2- Let's have a look at some SNA metrics on network.full
+
+**Diameter** of the graph is the length of the largest distance between nodes
+```{r}
+diameter(network.full)
+farthest.nodes(network.full)
+```
+Todos los empleados están conectados en un máximo de 5 pasos (emails de uno a otro teniendo en cuenta el sentido ya que es un grafo dirigido). 
+Los dos empleados "más alejados" (distancia 5) serian Joe Quenet y Lisa Gang.
+Esta distancia sugiere que Enron tiene una estructura jerárquica en departamentos, de modo que empleados de un dpto no suelen dirigirse a los de otro, etc.
+
+
+**Density** proportion of present edges from all possible edges in the network
+```{r}
+edge_density(network.full)
+```
+Esta medida debería estar entre [0, 1]. No aplica a este grafo, ya que hay múltiples mensajes (arcos) entre cualquier par de empleados (vértices). 
+Para usar esta medida habría primero que transformar el grafo,  asegurando que hay como maximo un solo arco entre cualquier par de vértices e indicando el numero de mensajes como una propiedad del arco.
+Ver más adelante con network.sna y network.social.
+
+**Reciprocity** The proportion of reciprocated ties (for a directed network)
+```{r}
+reciprocity(network.full)
+```
+Como en el caso de "Density", para poder aplicar bien esta medida habría primero que transformar el grafo, asegurando que hay como maximo un solo arco entre cualquier par de vértices e indicando el numero de mensajes como una propiedad del arco.
+Ver más adelante con network.sna.
+
+**Transitivity** 
+(This is sometimes also called the clustering coefficient)
+- global - ratio of triangles (direction disregarded) to connected triples.
+- local - ratio of triangles to connected triples each vertex is part of.
+
+```{r}
+transitivity(network.full, type="global") # net is treated as an undirected network
+
+transitivity(network.full, type="local") # for each node
+```
+
+**Triad census**
+Number of the different subgraphs of three vertices in a graph.
+Every triple of vertices (A, B, C) are classified into the 16 possible states. See ?triad_census for details.
+
+```{r}
+triad_census(network.full)
+```
+
+
+## 3- Computing some individual SNA metrics
+
+**Centrality measures** are computed and can be added to the node properties table.
+Basic centrality measure is **degree**, both in_degree and out_degree (this is a directed graph), and total_degree.
+
+```{r}
+nodes$degree_total <- degree(network.full, 
+                             v = V(network.full), 
+                             mode = c("total"))
+nodes$degree_in <- degree(network.full, 
+                             v = V(network.full), 
+                             mode = c("in"))
+nodes$degree_out <- degree(network.full, 
+                             v = V(network.full), 
+                             mode = c("out"))
+```
+
+Let's see who are the top10 for degree_total
+
+```{r}
+head(nodes[order(nodes$degree_total,
+           decreasing = TRUE),], n = 10)
+```
+
+**Reach** is another measure, also known as **neighborhood.size**. 
+Let's consider order = 2 (two steps)
+Let's see who are the top10
+```{r}
+nodes$reach_2_step <- 
+  neighborhood.size(network.full, 
+                    order = 2,
+                    nodes = V(network.full), 
+                    mode  = c("all"))
+
+head(nodes[order(nodes$reach_2_step,
+                 decreasing = TRUE),], n = 10)
+```
+De forma natural en una organización "jerárquica" son los altos cargos (CEOS, President, VPs) quienes aparecen conectados a más gente en dos pasos, ya que tienen contacto con todos los managers de departamento, y estos a su vez tienen contacto con los empleados. 
+El caso de Liz Taylor o Sally Beck habría que mirarlos, podrían ser p.ej. secretarias de algunos de los altos cargos.
+
+
+**local transitivity**
+```{r}
+nodes$transitivity_ratio <- 
+  transitivity(network.full, 
+               vids = V(network.full), 
+               type = "local")
+
+head(nodes[order(nodes$transitivity_ratio), ])
+```
+
+
+
+## 4- Creating the social graph 
+Comenzamos creando network.sna: grafo dirigido creado a partir network.full, pero ya con un arco dirigido como máximo entre dos vértices. El número de mensajes entre dos vertices queda como propiedad del arco.
+
+For that purpose we need a preliminary step: computing the weight of the link between two nodes. The simplest measure is the number of communications without distinction by type (to, cc, bcc).
+First we extract unique pairs and we order them:
+```{r}
+pairs <- as.data.frame(unique(edges.full[c(1,2)]))
+pairs <- pairs[order(pairs$sender, pairs$receiver),]
+
+edges.ordered <- edges.full[order(edges.full$sender, edges.full$receiver),]
+
+weight <- aggregate(edges.ordered[,3],
+                by = list(edges.ordered[,1],
+                          edges.ordered[,2]),
+                length) 
+
+weight <- weight[order(weight$Group.1, weight$Group.2),]
+```
+
+Then we mix pairs and weight 
+```{r}
+pairs$weight <- weight$x
+head(pairs)
+```
+
+Now we substitute the mails table by a links table and we produce a new graph using this as the edge table
+```{r}
+network.sna <- graph.data.frame(pairs,
+                            directed = TRUE,
+                            vertices = nodes)
+summary(network.sna)
+```
+
+Let's check now density, reciprocity and dyad.census on network.sna
+```{r}
+edge_density(network.sna)
+reciprocity(network.sna)
+dyad.census(network.sna)
+```
+Densidad = 0.11 -> hay muchos empleados que no han intercambiado mensajes con otros. Propio de una organización jerárquica.
+Reciprocidad = 0.61 -> un 61% de los enlaces son recíprocos. Lo normal es que fuera cercano a 1 ya que si tú has enviado un email a un compañero, lo normal es que recibas de respuesta un mail de él. Este comportamiento se ve alterado por haber considerado todo tipo de mensajes (To, Cc, BCc). 
+dyad.census: hay 968 enlaces "asym", es decir 968 parejas donde A ha enviado un email a B, pero B no ha enviado un email a A. 
+
+
+**social relationship**
+- network.social: grafo no dirigido creado a partir de network.sna. Dos vertices quedan conectados si había al menos un arco entre ellos en cualquier sentido. El total de mensajes intercambiados entre esos dos vertices queda como propiedad (weight) del arco.
+
+```{r}
+network.social <- as.undirected(network.sna, 
+                                mode = "collapse", 
+                                edge.attr.comb = "sum")
+summary(network.social)
+edge_density(network.social)
+```
+
+
+## 5- Computing Communities
+```{r}
+communities <- multilevel.community(network.social)
+
+comms.df <- data.frame(row.names = seq(1:149))
+comms.df$Email_id <- communities$names
+comms.df$community <- communities$membership
+```
+
+Then you can add each node's community to the nodes table
+```{r}
+nodes.def <- merge(nodes, comms.df, 
+                   by.x = "Email_id",
+                   by.y = "Email_id")
+
+str(nodes.def)
+head(nodes.def)
+barplot(table(nodes.def$community))
+
+V(network.social)$community <- communities$membership
+```
+Nos resultan 10 comunidades, pero hay tres comunidades (2,3 y 6) formadas por un solo vértice (empleado). Son 3 vértices desconectados (sin mensajes).
+Destaca la comunidad 8 con 63 vértices, que es justo donde están los CEOs y otros altos cargos además de empleados.
+
+## 6- Computing betweenness and closeness (medidas de centralidad ademas del grado)
+```{r}
+nodes$betweenness <- betweenness(network.social,
+                                 v= V(network.social), normalized=TRUE)
+
+nodes$closeness <- closeness(network.social, 
+                             v= V(network.social), normalized=TRUE)
+
+summary(nodes)
+
+# Mostramos el top10 de betweenness y closeness
+head(nodes[order(-nodes$betweenness), c("lastName", "status", "betweenness", "degree_total", "reach_2_step")], n=10)
+head(nodes[order(-nodes$closeness), c("lastName", "status", "betweenness", "closeness", "degree_total", "reach_2_step")], n=10)
+
+V(network.social)$betweenness <- nodes$betweenness
+V(network.social)$closeness <- nodes$closeness
+```
+
+## 7- Graph visualization
+Gephi is an excellent alternative for high quality plots of relatively large graphs
+```{r}
+
+# Añadimos lastName como label
+V(network.social)$label <- V(network.social)$lastName  
+
+write.graph(network.social, file="mse_enron_sna.graphml", format="graphml")
+```
+
+## 8- Ver Grafo adjunto resultante elaborado con Gephi
+Se observan las comunidades por colores y la importancia de cada nodo.
+Se ha usado la distribucion Yifan Hu.
+El color del arco es el del vértice de origen. Su rosor del arco es en función de su peso (número de mensajes)
+No he mostrado los 3 vértices no conectados para facilitar la impresión del gráfico.
+
+
+
+
+# Parte 2: Text Mining
+Voy a trabajar con los mensajes de "Lavorato", uno de los CEOs, y que es un empleado muy relevante como puede observarse en el gephi, y en sus medidas de centralidad y otras.
+Lavorato tiene el mejor "betweenness" y "closeness" de todos los empleados. Además Un "reach_2_step" de 144 (muy alto).
+```{r}
+nodes[nodes$lastName == "Lavorato", ]
+```
+
+Uso la variable ceos por si quisiera considerar más de un CEO. Por ahora solo "Lavorato".
+```{r}
+#ceos <- nodes[nodes$status == "CEO", "Email_id"]
+ceos <- c("lavorato@enron.com")
+
+enviados.ceos <- edges.full$body[edges.full$sender %in% ceos]
+recibidos.ceos <- edges.full$body[edges.full$receiver %in% ceos]
+
+# todos_ceos =  recibidos.ceos + enviados.ceos
+todos_ceos <- c(recibidos.ceos, enviados.ceos)
+length(todos_ceos)
+```
+
+## 1- Preparación de los textos
+- Pasamos los textos a minúsculas
+- Limpieza de caracteres no deseados usando expresiones regulares
+```{r}
+library(stringr)
+todos_ceos <- tolower(todos_ceos)
+todos_ceos <- str_replace_all(todos_ceos, pattern = "[:;,]", " ")  # quita :;,
+todos_ceos <- str_replace_all(todos_ceos, pattern = "[-+*/]", " ") # quita -+*/
+todos_ceos <- str_replace_all(todos_ceos, pattern = "[?!\"]", " ") # quita ?!"
+todos_ceos <- str_replace_all(todos_ceos, pattern = "\\\\", " ") # quita \\
+todos_ceos <- str_replace_all(todos_ceos, pattern = "[()]", " ") # quita ()
+todos_ceos <- str_replace_all(todos_ceos, pattern = "[\\t]", " ") # quita \t
+head(todos_ceos, n=2)
+```
+
+## 2- Creamos corpus quanteda
+```{r}
+library(quanteda)
+corpus_ceos <- corpus(todos_ceos)
+summary(corpus_ceos)
+
+palabras <- tokens(corpus_ceos, 
+                   remove_punct = TRUE,
+                   remove_numbers = TRUE,
+                   remove_url = TRUE)
+
+palabras
+```
+```{r}
+mystopwords <- c(stopwords("english"),
+                 "=",
+                 "s",
+                 ">",
+                 "<",
+                 "e", "j", "d", "w", "t", "$",
+                 "cc", "Re", 
+                 "eol",
+                 "please",
+                 "enron@enron",
+                 "subject",
+                 "forward",
+                 "forwarded")
+
+# limpia tokens inutiles
+palabras.stop <- tokens_select(palabras,
+                           pattern = mystopwords,
+                           selection = "remove")
+palabras.stop
+```
+
+## 3- creamos la matriz dfm de palabras.stop
+Y echamos un vistazo al top50 de términos más frecuentes
+```{r}
+dfm.palabras <- dfm(palabras.stop)
+topfeatures(dfm.palabras, 50)
+```
+Wordcloud de la matriz dfm.palabras
+```{r}
+library(quanteda.textplots)
+
+png(filename = "mse_wordcloud_enron_palabras.png",
+    width = 3000, 
+    height = 3000)
+textplot_wordcloud(dfm.palabras, 
+                   min_count = 10,
+                   max_words = 200,
+                   random_order = FALSE,
+                   rotation = 0, 
+                   color = RColorBrewer::brewer.pal(8,"Dark2"))
+dev.off()
+```
+
+## 4- Generamos los bigramas y trigramas y su matriz dfm
+```{r}
+ngrams.2_3 <- tokens_ngrams(palabras.stop,
+                           n = 2:3)
+dfm.ngrams <- dfm(ngrams.2_3)
+topfeatures(dfm.ngrams, 50)  #top50 ngrams
+```
+issue_comes es el bigrama más frecuente con diferencia. Y tanto que venía un issue, nada más y nada menos que el fraude y la posterior quiebra de Enron.
+
+### Reducimos el tamaño de la matriz dfm.ngrams
+Cortamos a un minimo de 10 apariciones
+```{r}
+dim(dfm.ngrams) 
+dfm.ngrams.reduced <- dfm_trim(dfm.ngrams, 
+                      min_termfreq = 10)
+dim(dfm.ngrams.reduced) 
+```
+Pasamos de 15219 ngrams a 614, reduciendo mucho la matriz, y sin perder utilidad.
+
+## 5- Mostramos la wordcloud de dfm.ngrams.reduced
+```{r}
+library(quanteda.textplots)
+
+png(filename = "mse_wordcloud_enron_ngrams.png",
+    width = 3000, 
+    height = 3000)
+textplot_wordcloud(dfm.ngrams.reduced, 
+                   min_count = 10,
+                   max_words = 200,
+                   random_order = FALSE,
+                   rotation = 0, 
+                   color = RColorBrewer::brewer.pal(8,"Dark2"))
+dev.off()
+```
+
+
+## 6- Topics
+Probaremos inicialmente con k=6, y luego con K=4 y k=8.
+```{r}
+library(topicmodels)
+my_lda_fit6 <- LDA(convert(dfm.ngrams.reduced, to = "topicmodels"), 
+                      k = 6) # Elegimos 6 topics
+get_terms(my_lda_fit6, 5) #  Los 5 terminos mas probables para cada topic
+```
+
+## 7- Mostramos la wordcloud de dfm.ngrams.reduced por cada topic
+
+```{r}
+# beta es la relación del token (ngram) con el topic n
+kk <- my_lda_fit6@beta
+# Generamos una matriz de dimensión k x n (k topics x n tokens)
+dim(kk)
+# Para poder dibujar los wordclouds ponemos el token como nombre de columna
+colnames(kk) <- my_lda_fit6@terms
+```
+
+Un gran plot con un wordcloud por topic
+```{r}
+library(RColorBrewer)
+library(wordcloud)
+
+png(file="mse_enron_k6_worcloud_ngram.png",
+    width=3600,
+    height=3000,
+    res = 300,
+    bg = "black")
+par(mfrow=c(2, 3))  # k=6 = 3x2
+
+for (k in 1:length(kk[,1])) {
+  v <- kk[k,]
+  # utilizando rank pasamos el beta numérico a orden (entero, positivo)
+  d <- data.frame(word = names(v), rank= rank(v))
+  # ordenamos descendente por rank
+  d <- d[order(-d$rank),]
+  
+  # normalizamos (parecido a una frecuencia de palabras) +100 para que tenga rango amplio
+  d$freq <- d$rank - max(d$rank) + 100
+  
+  # Now with a prettier layout
+  pal2 <- brewer.pal(11,"Spectral")
+  wordcloud(d$word,
+            d$freq, 
+            # scale nos da la diferencia relativa (máx mín) entre tamaños de palabras
+            scale = c(1.2, 0.05),
+            # max.words las que quepan
+            max.words = 200, 
+            random.order = FALSE, 
+            rot.per = 0, 
+            colors = pal2,
+            random.color = TRUE)
+  title(main = paste("topic", as.character(k)),
+        font = 10,
+        col.main = "yellow")
+}
+dev.off()
+```
+
+### Repetimos el plot para k= 4 y K=8, generando los ficheros "mse_enron_k4_worcloud_ngram.png" y "mse_enron_k8_worcloud_ngram.png" respectivamente.
+NO REPETIRÉ TODO EL CODIGO AQUÍ. 
+Solo mostraré los 5 términos más frecuentes para k=4 y k=8.
+
+```{r}
+print("k=4")
+my_lda_fit4 <- LDA(convert(dfm.ngrams.reduced, to = "topicmodels"), 
+                      k = 4) # Elegimos 4 topics
+get_terms(my_lda_fit4, 5) #  Los 5 terminos mas probables para cada topic
+
+print("k=8")
+my_lda_fit8 <- LDA(convert(dfm.ngrams.reduced, to = "topicmodels"), 
+                      k = 8) # Elegimos 8 topics
+get_terms(my_lda_fit8, 5) #  Los 5 terminos mas probables para cada topic
+```
+## 7- Análisis de los wordclouds resultantes
+Tomando k=6, fichero "mse_enron_k6_worcloud_ngram.png"
+
+Topic 1: ngrams relativos a external_candidates, nuevos analistas para trading...
+Topic 2: ngrams relativos a analistas asociados, entrevistas a nuevos, trading, ...
+Topic 3: ngrams relativos a business meetings, a estar todos juntos, referencias a Toronto, Calgary, Portland
+Topic 4: ngrams relativos a mensajes de Abril...
+Topic 5: ngrams relativos a una nuevos asociados, Canadá (Calgary, Toronto)...
+TOPIC 6: ngrams relativos a issue_comes, error de números, posibles favores a devolver...
+
+Del análisis de los topics se puede intuir que ya se estaba cerca del gran escándalo de Enron.
+Los accionistas perdieron cerca de 11.000 millones de dólares cuando el precio de la acción de Enron, que llegó a un máximo de 90 USD por acción a mediados del año 2000, se desplomó a menos de un dólar a finales de noviembre de 2001. 
+Muchos ejecutivos de Enron fueron acusados de una variedad de cargos y fueron, posteriormente, sentenciados a prisión. El auditor de Enron, Arthur Andersen, fue encontrado también culpable. 
+
